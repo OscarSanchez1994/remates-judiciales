@@ -1,0 +1,50 @@
+services:
+
+  php:
+    build: .
+    container_name: remates-php
+    volumes:
+      - ./src:/var/www/html
+    environment:
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_NAME=remates_judiciales
+      - DB_USER=root
+      - DB_PASS=root
+    depends_on:
+      - mysql
+    networks:
+      - remates-net
+
+  nginx:
+    image: nginx:latest
+    container_name: remates-nginx
+    ports:
+      - "8085:80"
+    volumes:
+      - ./src:/var/www/html
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      - php
+    networks:
+      - remates-net
+
+  mysql:
+    image: mysql:8.0
+    container_name: remates-mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=root
+      - MYSQL_DATABASE=remates_judiciales
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./src/database:/docker-entrypoint-initdb.d
+      - mysql_data:/var/lib/mysql
+    networks:
+      - remates-net
+
+networks:
+  remates-net:
+
+volumes:
+  mysql_data:
