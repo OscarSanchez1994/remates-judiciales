@@ -1,8 +1,15 @@
 {
-    "env": {
-      "ANTHROPIC_BASE_URL": "https://openrouter.ai/api",
-      "ANTHROPIC_AUTH_TOKEN": "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",
-      "ANTHROPIC_API_KEY": ""
-    }
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:publicacionesprocesales.ramajudicial.gov.co)",
+      "Bash(curl:*)",
+      "Bash(python3:*)",
+      "Bash(echo $TEMP)",
+      "Read(//c/Users/Oscar/remates-judiciales/**)",
+      "Bash(rm:*)",
+      "Bash(docker compose:*)",
+      "Bash(PREFIX=\"_co_com_avanti_efectosProcesales_PublicacionesEfectosProcesalesPortletV2_INSTANCE_BIyXQFHVaYaq\"\nBASE=\"https://publicacionesprocesales.ramajudicial.gov.co/web/publicaciones-procesales/inicio\"\nPP=\"p_p_id=co_com_avanti_efectosProcesales_PublicacionesEfectosProcesalesPortletV2_INSTANCE_BIyXQFHVaYaq&p_p_lifecycle=0&p_p_state=normal&p_p_mode=view\"\n\ncurl -s -A \"Mozilla/5.0\" \"${BASE}?${PP}&${PREFIX}_action=filterStructures&${PREFIX}_idStructure=6098997&${PREFIX}_idDepto=11&${PREFIX}_delta=30&${PREFIX}_resetCur=false&${PREFIX}_cur=1\" \\\\\n  | python3 -c \"\nimport sys, re\nhtml = sys.stdin.read\\(\\)\nrows = re.findall\\(r'class=\\\\\"titulo-publicacion', html\\)\nprint\\('Rows with delta=30:', len\\(rows\\)\\)\nm = re.search\\(r'Mostrando.*?\\(\\\\d+\\)\\\\s*-\\\\s*\\(\\\\d+\\)\\\\s*de\\\\s*\\([\\\\d\\\\.]+\\)', html\\)\nif m: print\\(f'Showing {m.group\\(1\\)}-{m.group\\(2\\)} of {m.group\\(3\\)}'\\)\n\")",
+      "Bash(docker exec:*)"
+    ]
   }
-  
+}
