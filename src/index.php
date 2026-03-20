@@ -124,17 +124,20 @@ const PER_PAGE = 20;
 const CUTOFF   = '2025-10-01';
 
 // ── Query params ───────────────────────────────────────────────────────────────
-$page  = max(1, (int) ($_GET['pagina'] ?? 1));
-$orden = ($_GET['orden'] ?? 'desc') === 'asc' ? 'asc' : 'desc';
-$error = null;
-$items = [];
-$total = 0;
+$page      = max(1, (int) ($_GET['pagina'] ?? 1));
+$orden     = ($_GET['orden'] ?? 'desc') === 'asc' ? 'asc' : 'desc';
+$pendientes = isset($_GET['pendientes']);
+$error     = null;
+$items     = [];
+$total     = 0;
 $totalPages = 0;
 $elapsed    = 0;
 $dbEmpty    = false;
 
-function pageUrl(int $p, string $orden): string {
-    return '?' . http_build_query(['pagina' => $p, 'orden' => $orden]);
+function pageUrl(int $p, string $orden, bool $pendientes = false): string {
+    $q = ['pagina' => $p, 'orden' => $orden];
+    if ($pendientes) $q['pendientes'] = '1';
+    return '?' . http_build_query($q);
 }
 
 // ── Migration: ensure fecha_pub_date column exists ────────────────────────────
@@ -150,12 +153,15 @@ try {
     $pdo       = db();
     $dir       = $orden === 'asc' ? 'ASC' : 'DESC';
 
-    $countStmt = $pdo->prepare('SELECT COUNT(*) FROM publicaciones WHERE fecha_pub_date >= ?');
+    $pendientesJoin  = $pendientes
+        ? 'LEFT JOIN procesados pr ON pr.article_id = p.article_id WHERE p.fecha_pub_date >= ? AND pr.article_id IS NULL'
+        : 'WHERE p.fecha_pub_date >= ?';
+
+    $countStmt = $pdo->prepare("SELECT COUNT(*) FROM publicaciones p $pendientesJoin");
     $countStmt->execute([CUTOFF]);
     $total = (int) $countStmt->fetchColumn();
 
-    if ($total === 0) {
-        // Check if table exists but simply has no synced records yet
+    if ($total === 0 && !$pendientes) {
         $anyStmt = $pdo->query('SELECT COUNT(*) FROM publicaciones');
         $dbEmpty = ((int) $anyStmt->fetchColumn()) === 0;
     }
@@ -165,10 +171,10 @@ try {
     $offset     = ($page - 1) * PER_PAGE;
 
     $stmt = $pdo->prepare("
-        SELECT article_id, titulo, despacho, fecha_pub_portal AS fecha, enlace
-        FROM publicaciones
-        WHERE fecha_pub_date >= ?
-        ORDER BY fecha_pub_date $dir, id $dir
+        SELECT p.article_id, p.titulo, p.despacho, p.fecha_pub_portal AS fecha, p.enlace
+        FROM publicaciones p
+        $pendientesJoin
+        ORDER BY p.fecha_pub_date $dir, p.id $dir
         LIMIT " . PER_PAGE . " OFFSET $offset
     ");
     $stmt->execute([CUTOFF]);
@@ -467,7 +473,8 @@ try {
         <div class="stats-bar">
             <div class="stats-info">
                 Mostrando <strong><?= $from ?>–<?= $to ?></strong> de
-                <strong><?= number_format($total, 0, ',', '.') ?></strong> publicaciones
+                <strong><?= number_format($total, 0, ',', '.') ?></strong>
+                <?= $pendientes ? 'pendientes' : 'publicaciones' ?>
                 &nbsp;·&nbsp; Página <?= $page ?> de <?= $totalPages ?>
                 &nbsp;·&nbsp; <span title="Tiempo de consulta BD">⏱ <?= $elapsed ?>s</span>
                 &nbsp;·&nbsp;
@@ -480,9 +487,20 @@ try {
                 $toggleOrden = $orden === 'asc' ? 'desc' : 'asc';
                 $toggleLabel = $orden === 'asc' ? '↓ Más reciente primero' : '↑ Más antiguo primero';
                 ?>
-                <a href="<?= htmlspecialchars(pageUrl(1, $toggleOrden)) ?>" class="btn btn-primary">
+                <a href="<?= htmlspecialchars(pageUrl(1, $toggleOrden, $pendientes)) ?>" class="btn btn-primary">
                     <?= $toggleLabel ?>
                 </a>
+                <?php if ($pendientes): ?>
+                    <a href="<?= htmlspecialchars(pageUrl(1, $orden, false)) ?>"
+                       class="btn" style="background:#f3f4f6;color:#555;border:1px solid #d1d5db;">
+                        ✕ Ver todas
+                    </a>
+                <?php else: ?>
+                    <a href="<?= htmlspecialchars(pageUrl(1, $orden, true)) ?>"
+                       class="btn" style="background:#fff8e1;color:#78350f;border:1px solid #f59e0b;">
+                        ☐ Solo pendientes
+                    </a>
+                <?php endif; ?>
             </div>
         </div>
 
@@ -551,27 +569,27 @@ try {
             <nav class="pagination" aria-label="Paginación">
                 <?php
                 if ($page > 1) {
-                    echo '<a href="' . htmlspecialchars(pageUrl(1, $orden)) . '" title="Primera">«</a>';
-                    echo '<a href="' . htmlspecialchars(pageUrl($page - 1, $orden)) . '" title="Anterior">‹</a>';
+                    echo '<a href="' . htmlspecialchars(pageUrl(1, $orden, $pendientes)) . '" title="Primera">«</a>';
+                    echo '<a href="' . htmlspecialchars(pageUrl($page - 1, $orden, $pendientes)) . '" title="Anterior">‹</a>';
                 } else {
                     echo '<span class="disabled">«</span><span class="disabled">‹</span>';
                 }
                 $window = 2; $start = max(1, $page - $window); $end = min($totalPages, $page + $window);
                 if ($start > 1) {
-                    echo '<a href="' . htmlspecialchars(pageUrl(1, $orden)) . '">1</a>';
+                    echo '<a href="' . htmlspecialchars(pageUrl(1, $orden, $pendientes)) . '">1</a>';
                     if ($start > 2) echo '<span class="ellipsis">…</span>';
                 }
                 for ($p = $start; $p <= $end; $p++) {
                     if ($p === $page) echo '<span class="current">' . $p . '</span>';
-                    else echo '<a href="' . htmlspecialchars(pageUrl($p, $orden)) . '">' . $p . '</a>';
+                    else echo '<a href="' . htmlspecialchars(pageUrl($p, $orden, $pendientes)) . '">' . $p . '</a>';
                 }
                 if ($end < $totalPages) {
                     if ($end < $totalPages - 1) echo '<span class="ellipsis">…</span>';
-                    echo '<a href="' . htmlspecialchars(pageUrl($totalPages, $orden)) . '">' . $totalPages . '</a>';
+                    echo '<a href="' . htmlspecialchars(pageUrl($totalPages, $orden, $pendientes)) . '">' . $totalPages . '</a>';
                 }
                 if ($page < $totalPages) {
-                    echo '<a href="' . htmlspecialchars(pageUrl($page + 1, $orden)) . '" title="Siguiente">›</a>';
-                    echo '<a href="' . htmlspecialchars(pageUrl($totalPages, $orden)) . '" title="Última">»</a>';
+                    echo '<a href="' . htmlspecialchars(pageUrl($page + 1, $orden, $pendientes)) . '" title="Siguiente">›</a>';
+                    echo '<a href="' . htmlspecialchars(pageUrl($totalPages, $orden, $pendientes)) . '" title="Última">»</a>';
                 } else {
                     echo '<span class="disabled">›</span><span class="disabled">»</span>';
                 }
