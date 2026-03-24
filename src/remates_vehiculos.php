@@ -11,6 +11,30 @@ function db(): PDO {
     return $pdo;
 }
 
+// ── Ensure estado column exists ────────────────────────────────────────────────
+try { db()->exec("ALTER TABLE remates_vehiculos ADD COLUMN estado VARCHAR(20) NOT NULL DEFAULT ''"); } catch(Exception $e) {}
+
+// ── AJAX: set_estado ──────────────────────────────────────────────────────────
+if (isset($_POST['action']) && $_POST['action'] === 'set_estado') {
+    header('Content-Type: application/json');
+    $id     = (int) ($_POST['id']   ?? 0);
+    $estado = trim($_POST['estado'] ?? '');
+    $motivo = trim($_POST['motivo'] ?? '');
+    if (!$id) { echo json_encode(['error' => 'invalid']); exit; }
+    if ($motivo !== '') {
+        $s = db()->prepare('SELECT notas FROM remates_vehiculos WHERE id = ?');
+        $s->execute([$id]);
+        $existing = (string) ($s->fetchColumn() ?? '');
+        $newNotas = $existing !== '' ? $existing . "\n" . $motivo : $motivo;
+        db()->prepare('UPDATE remates_vehiculos SET estado=?, notas=? WHERE id=?')->execute([$estado, $newNotas, $id]);
+        echo json_encode(['ok' => true, 'notas' => $newNotas]);
+    } else {
+        db()->prepare('UPDATE remates_vehiculos SET estado=? WHERE id=?')->execute([$estado, $id]);
+        echo json_encode(['ok' => true, 'notas' => null]);
+    }
+    exit;
+}
+
 // ── AJAX: update ──────────────────────────────────────────────────────────────
 if (isset($_POST['action']) && $_POST['action'] === 'update') {
     header('Content-Type: application/json');
@@ -112,6 +136,11 @@ $fh        = trim($_GET['fh']        ?? '');
 $page      = max(1, (int) ($_GET['pagina'] ?? 1));
 $perPage   = 20;
 
+// Sort params
+$sortAllow = ['avaluo' => 'rv.avaluo+0', 'fecha' => 'rv.fecha_remate, rv.hora_remate'];
+$sortKey   = isset($_GET['sort'], $sortAllow[$_GET['sort']]) ? $_GET['sort'] : '';
+$sortDir   = ($_GET['dir'] ?? '') === 'desc' ? 'DESC' : 'ASC';
+
 [$where, $params] = buildWhere($q, $marca, $modal, $fd, $fh);
 
 $total = (int) db()->prepare("SELECT COUNT(*) FROM remates_vehiculos $where")
@@ -127,15 +156,35 @@ $totalPages = max(1, (int) ceil($total / $perPage));
 $page       = min($page, $totalPages);
 $offset     = ($page - 1) * $perPage;
 
-$stmt = db()->prepare("SELECT * FROM remates_vehiculos $where ORDER BY id DESC LIMIT $perPage OFFSET $offset");
+$orderBy = $sortKey ? $sortAllow[$sortKey] . ' ' . $sortDir . ', rv.id DESC' : 'rv.id DESC';
+$stmt = db()->prepare("SELECT rv.*, p.enlace AS pub_enlace, p.titulo AS pub_titulo FROM remates_vehiculos rv LEFT JOIN publicaciones p ON p.article_id = rv.article_id $where ORDER BY $orderBy LIMIT $perPage OFFSET $offset");
 $stmt->execute($params);
 $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 // Current filter query string (for pagination links)
 function filterQs(array $extra = []): string {
-    global $q, $marca, $modal, $fd, $fh;
+    global $q, $marca, $modal, $fd, $fh, $sortKey, $sortDir;
     $base = array_filter(['q'=>$q,'marca'=>$marca,'modalidad'=>$modal,'fd'=>$fd,'fh'=>$fh]);
+    if ($sortKey && !isset($extra['sort'])) {
+        $base['sort'] = $sortKey;
+        $base['dir']  = strtolower($sortDir);
+    }
     return '?' . http_build_query(array_merge($base, $extra));
+}
+
+function sortUrl(string $key): string {
+    global $sortKey, $sortDir;
+    if ($sortKey !== $key)      return filterQs(['sort'=>$key, 'dir'=>'asc',  'pagina'=>1]);
+    if ($sortDir === 'ASC')     return filterQs(['sort'=>$key, 'dir'=>'desc', 'pagina'=>1]);
+    return filterQs(['sort'=>'', 'dir'=>'', 'pagina'=>1]);
+}
+
+function sortIcon(string $key): string {
+    global $sortKey, $sortDir;
+    if ($sortKey !== $key) return '<span class="sort-icon">⇅</span>';
+    return $sortDir === 'ASC'
+        ? '<span class="sort-icon active">↑</span>'
+        : '<span class="sort-icon active">↓</span>';
 }
 ?>
 <!DOCTYPE html>
@@ -202,7 +251,7 @@ function filterQs(array $extra = []): string {
         tbody tr:hover:not(.edit-row) { background: #f8f5ff; }
         td { padding: 11px 12px; vertical-align: middle; }
         td:first-child { text-align: center; color: #999; font-size: .78rem; }
-        .td-radicado { font-weight: 700; color: #0f3460; font-size: .83rem; max-width: 200px; word-break: break-all; }
+        .td-radicado { font-weight: 700; color: #0f3460; font-size: .68rem; white-space: nowrap; }
         .td-pub { color: #666; font-size: .78rem; max-width: 180px; line-height: 1.3; }
         .td-auto { font-size: .82rem; color: #333; }
         .td-placa { font-family: monospace; font-weight: 700; font-size: .85rem; }
@@ -247,6 +296,39 @@ function filterQs(array $extra = []): string {
         .pagination .cur { background: #7c3aed; color: #fff; border: 1px solid #7c3aed; }
         .pagination .dis { color: #bbb; border: 1px solid #eee; pointer-events: none; }
         .pagination .ell { color: #999; border: none; }
+
+        /* Hidden columns: Publicación (3), Color (8), Notas (13) */
+        #tbl th:nth-child(3), #tbl td:nth-child(3),
+        #tbl th:nth-child(8), #tbl td:nth-child(8),
+        #tbl th:nth-child(13), #tbl td:nth-child(13) { display: none; }
+        /* Widen Avalúo column */
+        #tbl th:nth-child(9) { min-width: 120px; }
+        /* Sortable headers */
+        th.sortable { cursor: pointer; user-select: none; }
+        th.sortable:hover { background: #1a3a6e; }
+        th.sortable.sorted { background: #1e4080; }
+        .sort-icon { margin-left: 4px; opacity: .45; font-style: normal; }
+        .sort-icon.active { opacity: 1; color: #a0c4ff; }
+
+        /* Status columns */
+        .th-estado { text-align: center !important; width: 38px; font-size: 1rem !important; letter-spacing: 0 !important; text-transform: none !important; }
+        .td-estado { text-align: center; }
+        .cb-estado { width: 16px; height: 16px; cursor: pointer; accent-color: #7c3aed; }
+        /* Row status colors */
+        tbody tr[data-estado="no_dado"] { background: #fee2e2 !important; }
+        tbody tr[data-estado="no_dado"]:hover:not(.edit-row) { background: #fecaca !important; }
+        tbody tr[data-estado="exitoso"]  { background: #d1fae5 !important; }
+        tbody tr[data-estado="exitoso"]:hover:not(.edit-row)  { background: #bbf7d0 !important; }
+        /* Modal */
+        #modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:1000; align-items:center; justify-content:center; }
+        #modal-box { background:#fff; border-radius:10px; padding:24px; width:440px; max-width:90vw; box-shadow:0 8px 32px rgba(0,0,0,.25); }
+        #modal-box h3 { font-size:1rem; font-weight:700; color:#0f3460; margin-bottom:6px; }
+        #modal-box p  { font-size:.82rem; color:#666; margin-bottom:12px; }
+        #modal-motivo { width:100%; border:1px solid #d1d5db; border-radius:6px; padding:8px; font-size:.85rem; font-family:inherit; resize:vertical; }
+        #modal-motivo.invalid { border-color:#e94560; }
+        .modal-footer { display:flex; justify-content:flex-end; gap:8px; margin-top:14px; }
+        .btn-modal-cancel { background:#f3f4f6; color:#555; border:none; border-radius:5px; padding:7px 16px; font-size:.85rem; cursor:pointer; }
+        .btn-modal-save   { background:#e94560; color:#fff; border:none; border-radius:5px; padding:7px 16px; font-size:.85rem; font-weight:700; cursor:pointer; }
 
         /* Empty */
         .empty { text-align: center; padding: 48px 20px; color: #999; font-size: .9rem; }
@@ -343,17 +425,19 @@ function filterQs(array $extra = []): string {
                     <th>Modelo</th>
                     <th>Placa</th>
                     <th>Color</th>
-                    <th>Avalúo</th>
+                    <th class="sortable <?= $sortKey==='avaluo' ? 'sorted' : '' ?>" onclick="location.href='<?= htmlspecialchars(sortUrl('avaluo')) ?>'">Avalúo<?= sortIcon('avaluo') ?></th>
                     <th>Base Remate</th>
-                    <th>Fecha / Hora</th>
+                    <th class="sortable <?= $sortKey==='fecha' ? 'sorted' : '' ?>" onclick="location.href='<?= htmlspecialchars(sortUrl('fecha')) ?>'">Fecha / Hora<?= sortIcon('fecha') ?></th>
                     <th>Modalidad</th>
                     <th>Notas</th>
+                    <th class="th-estado" title="No se dio el remate">❌</th>
+                    <th class="th-estado" title="Remate exitoso">✅</th>
                     <th>Acciones</th>
                 </tr>
             </thead>
             <tbody>
             <?php foreach ($rows as $i => $r): ?>
-                <tr id="row-<?= $r['id'] ?>">
+                <tr id="row-<?= $r['id'] ?>" data-estado="<?= htmlspecialchars($r['estado'] ?? '') ?>">
                     <td><?= ($page-1)*$perPage + $i + 1 ?></td>
                     <td class="td-radicado"><?= htmlspecialchars($r['radicado']) ?></td>
                     <td class="td-pub"><?= htmlspecialchars($r['titulo_pub'] ?? '') ?></td>
@@ -376,6 +460,16 @@ function filterQs(array $extra = []): string {
                         <?php endif; ?>
                     </td>
                     <td class="td-notas"><?= htmlspecialchars($r['notas'] ?? '') ?></td>
+                    <td class="td-estado">
+                        <input type="checkbox" class="cb-estado" id="cb-noDado-<?= $r['id'] ?>"
+                            <?= ($r['estado'] ?? '') === 'no_dado' ? 'checked' : '' ?>
+                            onchange="onCheckNoDado(<?= $r['id'] ?>, this.checked)">
+                    </td>
+                    <td class="td-estado">
+                        <input type="checkbox" class="cb-estado" id="cb-exitoso-<?= $r['id'] ?>"
+                            <?= ($r['estado'] ?? '') === 'exitoso' ? 'checked' : '' ?>
+                            onchange="onCheckExitoso(<?= $r['id'] ?>, this.checked)">
+                    </td>
                     <td>
                         <div class="action-btns">
                             <button class="btn-edit" onclick="startEdit(<?= $r['id'] ?>)">✏ Editar</button>
@@ -425,6 +519,19 @@ function filterQs(array $extra = []): string {
 
 </main>
 
+<!-- Modal: motivo no dado -->
+<div id="modal-overlay">
+    <div id="modal-box">
+        <h3>Remate no realizado</h3>
+        <p>Indique el motivo por el que el remate no se dio o no se va a dar:</p>
+        <textarea id="modal-motivo" rows="4" placeholder="Ej. Suspenso por el juzgado…"></textarea>
+        <div class="modal-footer">
+            <button class="btn-modal-cancel" onclick="modalCancel()">Cancelar</button>
+            <button class="btn-modal-save"   onclick="modalSave()">Guardar</button>
+        </div>
+    </div>
+</div>
+
 <script>
 // Cache of row data loaded from the DOM on page render
 const rowCache = {};
@@ -473,10 +580,20 @@ function startEdit(id) {
     editRow.id = 'edit-row-' + id;
     editRow.dataset.for = id;
     editRow.innerHTML = `
-        <td colspan="14">
+        <td colspan="16">
             <div style="font-size:.78rem;font-weight:700;color:#7c3aed;margin-bottom:10px">
                 ✏ Editando: ${esc(r.radicado)}
             </div>
+            ${(r.titulo_pub || r.pub_titulo) ? `
+            <div style="display:flex;align-items:flex-start;gap:12px;background:#f0f4ff;border-left:3px solid #7c3aed;border-radius:6px;padding:10px 14px;margin-bottom:12px">
+                <div style="flex:1;min-width:0">
+                    <div style="font-size:.68rem;font-weight:700;color:#7c3aed;text-transform:uppercase;letter-spacing:.4px;margin-bottom:3px">Publicación procesal</div>
+                    <div style="font-size:.82rem;color:#1a1a2e;line-height:1.4">${esc(r.titulo_pub || r.pub_titulo)}</div>
+                </div>
+                ${r.pub_enlace ? `<a href="${esc(r.pub_enlace)}" target="_blank" rel="noopener"
+                    style="flex-shrink:0;display:inline-flex;align-items:center;gap:5px;background:#7c3aed;color:#fff;text-decoration:none;font-size:.75rem;font-weight:700;padding:5px 11px;border-radius:5px;white-space:nowrap;margin-top:2px">
+                    Ver detalle ↗</a>` : ''}
+            </div>` : ''}
             <div class="edit-row-form">
                 <div class="fg full">
                     <label>Radicado <span style="color:#e94560">*</span></label>
@@ -608,6 +725,73 @@ function updateRowDisplay(id, r) {
         cells[11].innerHTML = '';
     }
     cells[12].textContent = r.notas || '';
+}
+
+// ── Estado: no dado / exitoso ──────────────────────────────────────────────────
+let _modalId = null;
+
+function onCheckNoDado(id, checked) {
+    if (checked) {
+        const cbOk = document.getElementById('cb-exitoso-' + id);
+        if (cbOk) cbOk.checked = false;
+        _modalId = id;
+        const ta = document.getElementById('modal-motivo');
+        ta.value = '';
+        ta.classList.remove('invalid');
+        const ol = document.getElementById('modal-overlay');
+        ol.style.display = 'flex';
+        ta.focus();
+    } else {
+        setEstado(id, '');
+    }
+}
+
+function onCheckExitoso(id, checked) {
+    if (checked) {
+        const cbX = document.getElementById('cb-noDado-' + id);
+        if (cbX) cbX.checked = false;
+        setEstado(id, 'exitoso');
+    } else {
+        setEstado(id, '');
+    }
+}
+
+function modalCancel() {
+    const cb = document.getElementById('cb-noDado-' + _modalId);
+    if (cb) cb.checked = false;
+    document.getElementById('modal-overlay').style.display = 'none';
+    _modalId = null;
+}
+
+async function modalSave() {
+    const ta = document.getElementById('modal-motivo');
+    const motivo = ta.value.trim();
+    if (!motivo) { ta.classList.add('invalid'); ta.focus(); return; }
+    ta.classList.remove('invalid');
+    await setEstado(_modalId, 'no_dado', motivo);
+    document.getElementById('modal-overlay').style.display = 'none';
+    _modalId = null;
+}
+
+async function setEstado(id, estado, motivo = '') {
+    const fd = new FormData();
+    fd.append('action',  'set_estado');
+    fd.append('id',       id);
+    fd.append('estado',   estado);
+    fd.append('motivo',   motivo);
+    try {
+        const resp = await fetch('', { method: 'POST', body: fd });
+        const d    = await resp.json();
+        if (d.error) { alert('Error: ' + d.error); return; }
+        const row = document.getElementById('row-' + id);
+        if (row) row.dataset.estado = estado;
+        if (rowCache[id]) {
+            rowCache[id].estado = estado;
+            if (d.notas !== null) rowCache[id].notas = d.notas;
+        }
+    } catch(e) {
+        alert('Error de conexión.');
+    }
 }
 
 async function delRow(id) {

@@ -127,6 +127,7 @@ const CUTOFF   = '2025-10-01';
 $page      = max(1, (int) ($_GET['pagina'] ?? 1));
 $orden     = ($_GET['orden'] ?? 'desc') === 'asc' ? 'asc' : 'desc';
 $pendientes = isset($_GET['pendientes']);
+$buscar    = trim($_GET['buscar'] ?? '');
 $error     = null;
 $items     = [];
 $total     = 0;
@@ -134,9 +135,10 @@ $totalPages = 0;
 $elapsed    = 0;
 $dbEmpty    = false;
 
-function pageUrl(int $p, string $orden, bool $pendientes = false): string {
+function pageUrl(int $p, string $orden, bool $pendientes = false, string $buscar = ''): string {
     $q = ['pagina' => $p, 'orden' => $orden];
     if ($pendientes) $q['pendientes'] = '1';
+    if ($buscar !== '') $q['buscar'] = $buscar;
     return '?' . http_build_query($q);
 }
 
@@ -153,15 +155,24 @@ try {
     $pdo       = db();
     $dir       = $orden === 'asc' ? 'ASC' : 'DESC';
 
-    $pendientesJoin  = $pendientes
-        ? 'LEFT JOIN procesados pr ON pr.article_id = p.article_id WHERE p.fecha_pub_date >= ? AND pr.article_id IS NULL'
+    $joinClause  = $pendientes
+        ? 'LEFT JOIN procesados pr ON pr.article_id = p.article_id'
+        : '';
+    $whereClause = $pendientes
+        ? 'WHERE p.fecha_pub_date >= ? AND pr.article_id IS NULL'
         : 'WHERE p.fecha_pub_date >= ?';
+    $queryParams = [CUTOFF];
 
-    $countStmt = $pdo->prepare("SELECT COUNT(*) FROM publicaciones p $pendientesJoin");
-    $countStmt->execute([CUTOFF]);
+    if ($buscar !== '') {
+        $whereClause .= ' AND LOWER(p.titulo) LIKE ?';
+        $queryParams[] = '%' . mb_strtolower($buscar, 'UTF-8') . '%';
+    }
+
+    $countStmt = $pdo->prepare("SELECT COUNT(*) FROM publicaciones p $joinClause $whereClause");
+    $countStmt->execute($queryParams);
     $total = (int) $countStmt->fetchColumn();
 
-    if ($total === 0 && !$pendientes) {
+    if ($total === 0 && !$pendientes && $buscar === '') {
         $anyStmt = $pdo->query('SELECT COUNT(*) FROM publicaciones');
         $dbEmpty = ((int) $anyStmt->fetchColumn()) === 0;
     }
@@ -173,11 +184,11 @@ try {
     $stmt = $pdo->prepare("
         SELECT p.article_id, p.titulo, p.despacho, p.fecha_pub_portal AS fecha, p.enlace
         FROM publicaciones p
-        $pendientesJoin
+        $joinClause $whereClause
         ORDER BY p.fecha_pub_date $dir, p.id $dir
         LIMIT " . PER_PAGE . " OFFSET $offset
     ");
-    $stmt->execute([CUTOFF]);
+    $stmt->execute($queryParams);
     $items = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     $elapsed = round(microtime(true) - $t0, 3);
@@ -470,6 +481,24 @@ try {
 
     <?php if (!$error && $total > 0): ?>
 
+        <form method="get" action="" style="margin-bottom:16px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <input type="hidden" name="orden" value="<?= htmlspecialchars($orden) ?>">
+            <?php if ($pendientes): ?><input type="hidden" name="pendientes" value="1"><?php endif; ?>
+            <input
+                type="text"
+                name="buscar"
+                value="<?= htmlspecialchars($buscar) ?>"
+                placeholder="Buscar por nombre de publicación…"
+                style="flex:1;min-width:240px;max-width:480px;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:0.875rem;font-family:inherit;transition:border-color 0.15s;"
+                onfocus="this.style.borderColor='#0f3460';this.style.boxShadow='0 0 0 3px rgba(15,52,96,0.1)'"
+                onblur="this.style.borderColor='#d1d5db';this.style.boxShadow='none'"
+            >
+            <button type="submit" class="btn btn-primary" style="white-space:nowrap;">🔍 Buscar</button>
+            <?php if ($buscar !== ''): ?>
+                <a href="<?= htmlspecialchars(pageUrl(1, $orden, $pendientes)) ?>" class="btn" style="background:#f3f4f6;color:#555;border:1px solid #d1d5db;white-space:nowrap;">✕ Limpiar</a>
+            <?php endif; ?>
+        </form>
+
         <div class="stats-bar">
             <div class="stats-info">
                 Mostrando <strong><?= $from ?>–<?= $to ?></strong> de
@@ -487,16 +516,16 @@ try {
                 $toggleOrden = $orden === 'asc' ? 'desc' : 'asc';
                 $toggleLabel = $orden === 'asc' ? '↓ Más reciente primero' : '↑ Más antiguo primero';
                 ?>
-                <a href="<?= htmlspecialchars(pageUrl(1, $toggleOrden, $pendientes)) ?>" class="btn btn-primary">
+                <a href="<?= htmlspecialchars(pageUrl(1, $toggleOrden, $pendientes, $buscar)) ?>" class="btn btn-primary">
                     <?= $toggleLabel ?>
                 </a>
                 <?php if ($pendientes): ?>
-                    <a href="<?= htmlspecialchars(pageUrl(1, $orden, false)) ?>"
+                    <a href="<?= htmlspecialchars(pageUrl(1, $orden, false, $buscar)) ?>"
                        class="btn" style="background:#f3f4f6;color:#555;border:1px solid #d1d5db;">
                         ✕ Ver todas
                     </a>
                 <?php else: ?>
-                    <a href="<?= htmlspecialchars(pageUrl(1, $orden, true)) ?>"
+                    <a href="<?= htmlspecialchars(pageUrl(1, $orden, true, $buscar)) ?>"
                        class="btn" style="background:#fff8e1;color:#78350f;border:1px solid #f59e0b;">
                         ☐ Solo pendientes
                     </a>
@@ -569,27 +598,27 @@ try {
             <nav class="pagination" aria-label="Paginación">
                 <?php
                 if ($page > 1) {
-                    echo '<a href="' . htmlspecialchars(pageUrl(1, $orden, $pendientes)) . '" title="Primera">«</a>';
-                    echo '<a href="' . htmlspecialchars(pageUrl($page - 1, $orden, $pendientes)) . '" title="Anterior">‹</a>';
+                    echo '<a href="' . htmlspecialchars(pageUrl(1, $orden, $pendientes, $buscar)) . '" title="Primera">«</a>';
+                    echo '<a href="' . htmlspecialchars(pageUrl($page - 1, $orden, $pendientes, $buscar)) . '" title="Anterior">‹</a>';
                 } else {
                     echo '<span class="disabled">«</span><span class="disabled">‹</span>';
                 }
                 $window = 2; $start = max(1, $page - $window); $end = min($totalPages, $page + $window);
                 if ($start > 1) {
-                    echo '<a href="' . htmlspecialchars(pageUrl(1, $orden, $pendientes)) . '">1</a>';
+                    echo '<a href="' . htmlspecialchars(pageUrl(1, $orden, $pendientes, $buscar)) . '">1</a>';
                     if ($start > 2) echo '<span class="ellipsis">…</span>';
                 }
                 for ($p = $start; $p <= $end; $p++) {
                     if ($p === $page) echo '<span class="current">' . $p . '</span>';
-                    else echo '<a href="' . htmlspecialchars(pageUrl($p, $orden, $pendientes)) . '">' . $p . '</a>';
+                    else echo '<a href="' . htmlspecialchars(pageUrl($p, $orden, $pendientes, $buscar)) . '">' . $p . '</a>';
                 }
                 if ($end < $totalPages) {
                     if ($end < $totalPages - 1) echo '<span class="ellipsis">…</span>';
-                    echo '<a href="' . htmlspecialchars(pageUrl($totalPages, $orden, $pendientes)) . '">' . $totalPages . '</a>';
+                    echo '<a href="' . htmlspecialchars(pageUrl($totalPages, $orden, $pendientes, $buscar)) . '">' . $totalPages . '</a>';
                 }
                 if ($page < $totalPages) {
-                    echo '<a href="' . htmlspecialchars(pageUrl($page + 1, $orden, $pendientes)) . '" title="Siguiente">›</a>';
-                    echo '<a href="' . htmlspecialchars(pageUrl($totalPages, $orden, $pendientes)) . '" title="Última">»</a>';
+                    echo '<a href="' . htmlspecialchars(pageUrl($page + 1, $orden, $pendientes, $buscar)) . '" title="Siguiente">›</a>';
+                    echo '<a href="' . htmlspecialchars(pageUrl($totalPages, $orden, $pendientes, $buscar)) . '" title="Última">»</a>';
                 } else {
                     echo '<span class="disabled">›</span><span class="disabled">»</span>';
                 }
