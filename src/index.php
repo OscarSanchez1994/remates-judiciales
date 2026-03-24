@@ -192,8 +192,26 @@ try {
     $items = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     $elapsed = round(microtime(true) - $t0, 3);
+
+    // ── Count processed / pending for the base filter (ignoring pendientes toggle)
+    $baseWhere  = 'WHERE p.fecha_pub_date >= ?';
+    $baseParams = [CUTOFF];
+    if ($buscar !== '') {
+        $baseWhere  .= ' AND LOWER(p.titulo) LIKE ?';
+        $baseParams[] = '%' . mb_strtolower($buscar, 'UTF-8') . '%';
+    }
+    $stmtBase = $pdo->prepare("SELECT COUNT(*) FROM publicaciones p $baseWhere");
+    $stmtBase->execute($baseParams);
+    $totalBase = (int) $stmtBase->fetchColumn();
+
+    $stmtProc = $pdo->prepare("SELECT COUNT(*) FROM publicaciones p INNER JOIN procesados pr ON pr.article_id = p.article_id $baseWhere");
+    $stmtProc->execute($baseParams);
+    $totalProcesadas = (int) $stmtProc->fetchColumn();
+    $totalPendientes = $totalBase - $totalProcesadas;
+
 } catch (Throwable $e) {
     $error = $e->getMessage();
+    $totalBase = $totalProcesadas = $totalPendientes = 0;
 }
 
 $from = $total > 0 ? (($page - 1) * PER_PAGE + 1) : 0;
@@ -441,6 +459,12 @@ try {
     </div>
     <nav style="display:flex;flex-direction:column;gap:4px;align-items:flex-end;">
         <div style="display:flex;gap:10px;align-items:center;">
+            <?php if ($totalBase > 0): ?>
+                <span title="<?= $totalProcesadas ?> procesadas · <?= $totalPendientes ?> pendientes"
+                      style="display:inline-flex;align-items:center;gap:0;border-radius:20px;overflow:hidden;font-size:.82rem;font-weight:600;white-space:nowrap;cursor:default">
+                    <span style="background:#2d8a4e;color:#fff;padding:4px 10px">✓ <?= number_format($totalProcesadas, 0, ',', '.') ?></span><span style="background:#b45309;color:#fff;padding:4px 10px">⏳ <?= number_format($totalPendientes, 0, ',', '.') ?></span>
+                </span>
+            <?php endif; ?>
             <?php if ($total > 0): ?>
                 <span class="badge"><?= number_format($total, 0, ',', '.') ?> publicaciones</span>
             <?php endif; ?>
