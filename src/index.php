@@ -43,17 +43,17 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_remates') {
 // ── AJAX: save remate vehiculo ────────────────────────────────────────────────
 if (isset($_POST['action']) && $_POST['action'] === 'save_remate') {
     header('Content-Type: application/json');
-    $aid     = preg_replace('/\D/', '', $_POST['article_id'] ?? '');
+    $aid      = preg_replace('/\D/', '', $_POST['article_id'] ?? '');
     $radicado = trim($_POST['radicado'] ?? '');
-    if (!$aid || !$radicado) { echo json_encode(['error' => 'Radicado es obligatorio']); exit; }
+    if (!$radicado) { echo json_encode(['error' => 'Radicado es obligatorio']); exit; }
     $stmt = db()->prepare('
         INSERT INTO remates_vehiculos
             (article_id, titulo_pub, radicado, marca, modelo, anio, placa, color,
-             avaluo, base_remate, fecha_remate, hora_remate, modalidad, notas)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             avaluo, base_remate, fecha_remate, hora_remate, modalidad, notas, fuente_url)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     ');
     $stmt->execute([
-        $aid,
+        $aid ?: '',
         trim($_POST['titulo_pub']   ?? ''),
         $radicado,
         trim($_POST['marca']        ?? ''),
@@ -67,6 +67,7 @@ if (isset($_POST['action']) && $_POST['action'] === 'save_remate') {
         trim($_POST['hora_remate']  ?? ''),
         trim($_POST['modalidad']    ?? ''),
         trim($_POST['notas']        ?? ''),
+        trim($_POST['fuente_url']   ?? ''),
     ]);
     $newId = db()->lastInsertId();
     $row   = db()->prepare('SELECT * FROM remates_vehiculos WHERE id = ?');
@@ -79,14 +80,13 @@ if (isset($_POST['action']) && $_POST['action'] === 'save_remate') {
 if (isset($_POST['action']) && $_POST['action'] === 'update_remate') {
     header('Content-Type: application/json');
     $id       = (int) ($_POST['id'] ?? 0);
-    $aid      = preg_replace('/\D/', '', $_POST['article_id'] ?? '');
     $radicado = trim($_POST['radicado'] ?? '');
-    if (!$id || !$aid || !$radicado) { echo json_encode(['error' => 'Radicado es obligatorio']); exit; }
+    if (!$id || !$radicado) { echo json_encode(['error' => 'Radicado es obligatorio']); exit; }
     db()->prepare('
         UPDATE remates_vehiculos SET
             radicado=?, marca=?, modelo=?, anio=?, placa=?, color=?,
-            avaluo=?, base_remate=?, fecha_remate=?, hora_remate=?, modalidad=?, notas=?
-        WHERE id=? AND article_id=?
+            avaluo=?, base_remate=?, fecha_remate=?, hora_remate=?, modalidad=?, notas=?, fuente_url=?
+        WHERE id=?
     ')->execute([
         $radicado,
         trim($_POST['marca']        ?? ''),
@@ -100,7 +100,8 @@ if (isset($_POST['action']) && $_POST['action'] === 'update_remate') {
         trim($_POST['hora_remate']  ?? ''),
         trim($_POST['modalidad']    ?? ''),
         trim($_POST['notas']        ?? ''),
-        $id, $aid,
+        trim($_POST['fuente_url']   ?? ''),
+        $id,
     ]);
     $row = db()->prepare('SELECT * FROM remates_vehiculos WHERE id=?');
     $row->execute([$id]);
@@ -158,6 +159,10 @@ if (empty($colCheck2)) {
     db()->exec("ALTER TABLE publicaciones ADD COLUMN depto_id VARCHAR(5) NOT NULL DEFAULT '11' AFTER article_id");
     try { db()->exec("ALTER TABLE publicaciones ADD INDEX idx_depto (depto_id)"); } catch (Throwable) {}
 }
+
+// ── remates_vehiculos migrations ──────────────────────────────────────────────
+try { db()->exec("ALTER TABLE remates_vehiculos ADD COLUMN fuente_url VARCHAR(2048) NOT NULL DEFAULT ''"); } catch (Throwable) {}
+try { db()->exec("ALTER TABLE remates_vehiculos MODIFY COLUMN article_id VARCHAR(50) NOT NULL DEFAULT ''"); } catch (Throwable) {}
 
 // ── Fetch from DB ──────────────────────────────────────────────────────────────
 try {
@@ -532,6 +537,10 @@ try {
                style="color:#fff;text-decoration:none;font-size:.82rem;padding:5px 14px;border:1px solid rgba(124,58,237,.6);border-radius:5px;background:rgba(124,58,237,.3);font-weight:600;">
                 🚗 Mis Remates
             </a>
+            <button onclick="openStandaloneModal()"
+                    style="color:#fff;font-size:.82rem;padding:5px 14px;border:1px solid rgba(45,138,78,.6);border-radius:5px;background:rgba(45,138,78,.3);font-weight:600;cursor:pointer;">
+                + Agregar Remate
+            </button>
             <button id="btn-sync" onclick="runSync(false)">↻ Actualizar</button>
             <button id="btn-full-sync" onclick="runSync(true)"
                     style="color:#fff;font-size:.75rem;padding:4px 10px;border:1px solid rgba(255,255,255,.25);border-radius:5px;background:rgba(255,255,255,.07);font-weight:500;cursor:pointer;">
@@ -832,10 +841,17 @@ try {
                     </div>
                 </div>
 
-                <div class="form-grid cols-1">
+                <div class="form-grid cols-1" style="margin-bottom:14px">
                     <div class="form-group">
                         <label>Notas / Observaciones</label>
                         <textarea name="notas" placeholder="Información adicional del remate…"></textarea>
+                    </div>
+                </div>
+
+                <div class="form-grid cols-1" id="fuente-url-group">
+                    <div class="form-group">
+                        <label>URL de fuente <span style="color:#888;font-size:.72rem;font-weight:400">(opcional · ej. anuncio de periódico, portal, etc.)</span></label>
+                        <input type="url" id="f-fuente-url" name="fuente_url" placeholder="https://…">
                     </div>
                 </div>
             </form>
@@ -962,11 +978,13 @@ async function toggleProcesado(label) {
 }
 
 // ── Modal ─────────────────────────────────────────────────────────────────────
-let currentAid    = null;
-let currentTitulo = '';
+let currentAid      = null;
+let currentTitulo   = '';
+let standaloneMode  = false;
 const cardDataCache = {};
 
 function openModal(aid, titulo) {
+    standaloneMode = false;
     currentAid    = aid;
     currentTitulo = titulo;
     document.getElementById('modal-pub-titulo').textContent = titulo;
@@ -976,13 +994,36 @@ function openModal(aid, titulo) {
     document.getElementById('f-article-id').value  = aid;
     document.getElementById('f-titulo-pub').value  = titulo;
     document.getElementById('f-radicado').classList.remove('invalid');
+    // Restore sections hidden by standalone mode
+    document.getElementById('remates-list').style.display = '';
+    document.querySelector('.form-divider').style.display = '';
+    document.querySelector('.form-section-title').style.display = '';
     document.getElementById('modal-overlay').classList.add('open');
     loadRemates(aid);
 }
 
+function openStandaloneModal() {
+    standaloneMode = true;
+    currentAid    = '';
+    currentTitulo = '';
+    document.getElementById('modal-pub-titulo').textContent = 'Remate independiente (sin publicación procesal)';
+    document.getElementById('f-article-id').value = '';
+    document.getElementById('f-titulo-pub').value  = '';
+    document.getElementById('form-remate').reset();
+    document.getElementById('f-article-id').value = '';
+    document.getElementById('f-titulo-pub').value  = '';
+    document.getElementById('f-radicado').classList.remove('invalid');
+    // Hide the "existing remates" section — not applicable in standalone mode
+    document.getElementById('remates-list').style.display = 'none';
+    document.querySelector('.form-divider').style.display = 'none';
+    document.querySelector('.form-section-title').style.display = 'none';
+    document.getElementById('modal-overlay').classList.add('open');
+}
+
 function closeModal() {
     document.getElementById('modal-overlay').classList.remove('open');
-    currentAid = null;
+    currentAid     = null;
+    standaloneMode = false;
 }
 
 function overlayClick(e) {
@@ -1083,6 +1124,12 @@ function cardEditHtml(r, aid) {
             <div class="edit-form-grid cols-1">
                 <div class="form-group"><label>Notas</label><textarea id="ef-notas-${r.id}">${esc(r.notas||'')}</textarea></div>
             </div>
+            <div class="edit-form-grid cols-1" style="margin-top:10px">
+                <div class="form-group">
+                    <label>URL de fuente <span style="color:#888;font-size:.68rem;font-weight:400">(opcional)</span></label>
+                    <input type="url" id="ef-fuente-${r.id}" value="${esc(r.fuente_url||'')}" placeholder="https://…">
+                </div>
+            </div>
 
             <div class="edit-actions">
                 <button class="btn-cancel-edit" onclick="cancelEdit(${r.id}, '${esc(aid)}')">Cancelar</button>
@@ -1130,6 +1177,7 @@ async function saveEdit(id, aid) {
     fd.append('hora_remate',   document.getElementById('ef-hora-'      + id).value.trim());
     fd.append('modalidad',     document.getElementById('ef-modalidad-' + id).value);
     fd.append('notas',         document.getElementById('ef-notas-'     + id).value.trim());
+    fd.append('fuente_url',    document.getElementById('ef-fuente-'    + id)?.value.trim() ?? '');
 
     try {
         const r = await fetch('', { method: 'POST', body: fd });
@@ -1188,9 +1236,23 @@ async function submitRemate(e) {
         if (d.error) { alert('Error: ' + d.error); return; }
         cardDataCache[d.remate.id] = d.remate;
         document.getElementById('form-remate').reset();
-        document.getElementById('f-article-id').value  = currentAid;
-        document.getElementById('f-titulo-pub').value  = currentTitulo;
-        await loadRemates(currentAid);
+
+        if (standaloneMode) {
+            // Show success banner and keep modal open for another entry
+            document.getElementById('f-article-id').value = '';
+            document.getElementById('f-titulo-pub').value  = '';
+            const banner = document.createElement('div');
+            banner.style.cssText = 'background:#d1fae5;border:1px solid #6ee7b7;color:#065f46;border-radius:6px;padding:10px 14px;margin-bottom:14px;font-size:.85rem;display:flex;align-items:center;justify-content:space-between;gap:12px;';
+            banner.innerHTML = '<span>&#10003; Remate guardado correctamente.</span>'
+                + '<a href="/remates_vehiculos.php" style="color:#7c3aed;font-weight:700;white-space:nowrap;text-decoration:none">Ver en Mis Remates &rarr;</a>';
+            const formEl = document.getElementById('form-remate');
+            formEl.parentNode.insertBefore(banner, formEl);
+            setTimeout(() => banner.remove(), 6000);
+        } else {
+            document.getElementById('f-article-id').value = currentAid;
+            document.getElementById('f-titulo-pub').value  = currentTitulo;
+            await loadRemates(currentAid);
+        }
     } catch (err) {
         alert('Error de conexión. Intenta de nuevo.');
     }

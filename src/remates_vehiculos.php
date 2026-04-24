@@ -11,8 +11,9 @@ function db(): PDO {
     return $pdo;
 }
 
-// ── Ensure estado column exists ────────────────────────────────────────────────
+// ── Ensure columns exist ───────────────────────────────────────────────────────
 try { db()->exec("ALTER TABLE remates_vehiculos ADD COLUMN estado VARCHAR(20) NOT NULL DEFAULT ''"); } catch(Exception $e) {}
+try { db()->exec("ALTER TABLE remates_vehiculos ADD COLUMN fuente_url VARCHAR(2048) NOT NULL DEFAULT ''"); } catch(Exception $e) {}
 
 // ── AJAX: set_estado ──────────────────────────────────────────────────────────
 if (isset($_POST['action']) && $_POST['action'] === 'set_estado') {
@@ -44,7 +45,7 @@ if (isset($_POST['action']) && $_POST['action'] === 'update') {
     db()->prepare('
         UPDATE remates_vehiculos SET
             radicado=?, marca=?, modelo=?, anio=?, placa=?, color=?,
-            avaluo=?, base_remate=?, fecha_remate=?, hora_remate=?, modalidad=?, notas=?
+            avaluo=?, base_remate=?, fecha_remate=?, hora_remate=?, modalidad=?, notas=?, fuente_url=?
         WHERE id=?
     ')->execute([
         $radicado,
@@ -59,6 +60,7 @@ if (isset($_POST['action']) && $_POST['action'] === 'update') {
         trim($_POST['hora_remate']  ?? ''),
         trim($_POST['modalidad']    ?? ''),
         trim($_POST['notas']        ?? ''),
+        trim($_POST['fuente_url']   ?? ''),
         $id,
     ]);
     $row = db()->prepare('SELECT * FROM remates_vehiculos WHERE id = ?');
@@ -94,11 +96,11 @@ if (isset($_GET['export'])) {
     header('Content-Disposition: attachment; filename="remates-vehiculos-' . date('Y-m-d') . '.csv"');
     $out = fopen('php://output', 'w');
     fprintf($out, chr(0xEF).chr(0xBB).chr(0xBF));
-    fputcsv($out, ['#','Radicado','Publicación','Marca','Línea','Modelo','Placa','Color','Avalúo','Base Remate','Fecha','Hora','Modalidad','Notas'], ';');
+    fputcsv($out, ['#','Radicado','Publicación','Marca','Línea','Modelo','Placa','Color','Avalúo','Base Remate','Fecha','Hora','Modalidad','Notas','Fuente URL'], ';');
     foreach ($rows as $i => $r) {
         fputcsv($out, [$i+1, $r['radicado'], $r['titulo_pub'], $r['marca'], $r['modelo'],
             $r['anio'], $r['placa'], $r['color'], $r['avaluo'], $r['base_remate'],
-            $r['fecha_remate'], $r['hora_remate'], $r['modalidad'], $r['notas']], ';');
+            $r['fecha_remate'], $r['hora_remate'], $r['modalidad'], $r['notas'], $r['fuente_url'] ?? ''], ';');
     }
     fclose($out); exit;
 }
@@ -439,7 +441,14 @@ function sortIcon(string $key): string {
             <?php foreach ($rows as $i => $r): ?>
                 <tr id="row-<?= $r['id'] ?>" data-estado="<?= htmlspecialchars($r['estado'] ?? '') ?>">
                     <td><?= ($page-1)*$perPage + $i + 1 ?></td>
-                    <td class="td-radicado"><?= htmlspecialchars($r['radicado']) ?></td>
+                    <td class="td-radicado">
+                        <?= htmlspecialchars($r['radicado']) ?>
+                        <?php if (!empty($r['fuente_url'])): ?>
+                            <a href="<?= htmlspecialchars($r['fuente_url']) ?>" target="_blank" rel="noopener"
+                               title="Ver fuente: <?= htmlspecialchars($r['fuente_url']) ?>"
+                               style="margin-left:5px;color:#2d8a4e;text-decoration:none;font-size:.85rem">&#128279;</a>
+                        <?php endif; ?>
+                    </td>
                     <td class="td-pub"><?= htmlspecialchars($r['titulo_pub'] ?? '') ?></td>
                     <td class="td-auto"><?= htmlspecialchars($r['marca'] ?? '') ?></td>
                     <td class="td-auto"><?= htmlspecialchars($r['modelo'] ?? '') ?></td>
@@ -594,6 +603,10 @@ function startEdit(id) {
                     style="flex-shrink:0;display:inline-flex;align-items:center;gap:5px;background:#7c3aed;color:#fff;text-decoration:none;font-size:.75rem;font-weight:700;padding:5px 11px;border-radius:5px;white-space:nowrap;margin-top:2px">
                     Ver detalle ↗</a>` : ''}
             </div>` : ''}
+            ${(!r.pub_enlace && r.fuente_url) ? `
+            <div style="display:flex;align-items:center;gap:10px;background:#f0fff4;border-left:3px solid #2d8a4e;border-radius:6px;padding:8px 14px;margin-bottom:12px">
+                <div style="font-size:.78rem;color:#065f46;flex:1">&#128279; Fuente: <a href="${esc(r.fuente_url)}" target="_blank" rel="noopener" style="color:#0f3460;font-weight:600;word-break:break-all">${esc(r.fuente_url)}</a></div>
+            </div>` : ''}
             <div class="edit-row-form">
                 <div class="fg full">
                     <label>Radicado <span style="color:#e94560">*</span></label>
@@ -647,6 +660,10 @@ function startEdit(id) {
                     <label>Notas</label>
                     <textarea id="ef-notas-${id}">${esc(r.notas)}</textarea>
                 </div>
+                <div class="fg full">
+                    <label>URL de fuente <span style="color:#888;font-size:.65rem;font-weight:400">(opcional)</span></label>
+                    <input type="url" id="ef-fuente-${id}" value="${esc(r.fuente_url||'')}" placeholder="https://…">
+                </div>
             </div>
             <div class="edit-save-bar">
                 <button class="btn-cancel-inline" onclick="cancelEdit(${id})">Cancelar</button>
@@ -688,6 +705,7 @@ async function saveEdit(id) {
     fd.append('hora_remate',   document.getElementById('ef-hora-'      + id).value.trim());
     fd.append('modalidad',     document.getElementById('ef-modalidad-' + id).value);
     fd.append('notas',         document.getElementById('ef-notas-'     + id).value.trim());
+    fd.append('fuente_url',    document.getElementById('ef-fuente-'    + id)?.value.trim() ?? '');
 
     try {
         const resp = await fetch('', { method: 'POST', body: fd });
@@ -708,7 +726,8 @@ function updateRowDisplay(id, r) {
     if (!row) return;
     const cells = row.querySelectorAll('td');
     // cells: 0=#, 1=radicado, 2=pub, 3=marca, 4=linea, 5=modelo, 6=placa, 7=color, 8=avaluo, 9=base, 10=fecha, 11=modal, 12=notas, 13=actions
-    cells[1].textContent = r.radicado;
+    cells[1].innerHTML = esc(r.radicado)
+        + (r.fuente_url ? ` <a href="${esc(r.fuente_url)}" target="_blank" rel="noopener" title="Ver fuente" style="margin-left:5px;color:#2d8a4e;text-decoration:none;font-size:.85rem">&#128279;</a>` : '');
     cells[3].textContent = r.marca        || '';
     cells[4].textContent = r.modelo       || '';
     cells[5].textContent = r.anio         || '';
