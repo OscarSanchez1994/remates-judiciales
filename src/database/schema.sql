@@ -68,3 +68,15 @@ CREATE TABLE IF NOT EXISTS procesados (
     procesado_at DATETIME    DEFAULT CURRENT_TIMESTAMP,
     notas        TEXT        NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- departamentos table (added for multi-department support)
+CREATE TABLE IF NOT EXISTS departamentos (
+    depto_id   VARCHAR(5)   NOT NULL PRIMARY KEY,
+    nombre     VARCHAR(100) NOT NULL,
+    activo     TINYINT(1)   NOT NULL DEFAULT 0,
+    created_at DATETIME     DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- publicaciones: add depto_id column (migration handled in sync.php)
+-- ALTER TABLE publicaciones ADD COLUMN depto_id VARCHAR(5) NOT NULL DEFAULT '11' AFTER article_id;
+-- ALTER TABLE publicaciones ADD INDEX idx_depto (depto_id);

@@ -128,6 +128,7 @@ $page      = max(1, (int) ($_GET['pagina'] ?? 1));
 $orden     = ($_GET['orden'] ?? 'desc') === 'asc' ? 'asc' : 'desc';
 $pendientes = isset($_GET['pendientes']);
 $buscar    = trim($_GET['buscar'] ?? '');
+$deptoFilter = trim($_GET['depto'] ?? '');
 $error     = null;
 $items     = [];
 $total     = 0;
@@ -135,18 +136,27 @@ $totalPages = 0;
 $elapsed    = 0;
 $dbEmpty    = false;
 
-function pageUrl(int $p, string $orden, bool $pendientes = false, string $buscar = ''): string {
+function pageUrl(int $p, string $orden, bool $pendientes = false, string $buscar = '', string $depto = "\x00"): string {
+    global $deptoFilter;
     $q = ['pagina' => $p, 'orden' => $orden];
-    if ($pendientes) $q['pendientes'] = '1';
-    if ($buscar !== '') $q['buscar'] = $buscar;
+    if ($pendientes)   $q['pendientes'] = '1';
+    if ($buscar !== '') $q['buscar']    = $buscar;
+    $d = ($depto === "\x00") ? $deptoFilter : $depto;
+    if ($d !== '') $q['depto'] = $d;
     return '?' . http_build_query($q);
 }
 
-// ── Migration: ensure fecha_pub_date column exists ────────────────────────────
+// ── Migrations ────────────────────────────────────────────────────────────────
 $colCheck = db()->query("SHOW COLUMNS FROM publicaciones LIKE 'fecha_pub_date'")->fetchAll();
 if (empty($colCheck)) {
     db()->exec("ALTER TABLE publicaciones ADD COLUMN fecha_pub_date DATE NULL");
     try { db()->exec("ALTER TABLE publicaciones ADD INDEX idx_fecha_pub (fecha_pub_date)"); } catch (Throwable) {}
+}
+
+$colCheck2 = db()->query("SHOW COLUMNS FROM publicaciones LIKE 'depto_id'")->fetchAll();
+if (empty($colCheck2)) {
+    db()->exec("ALTER TABLE publicaciones ADD COLUMN depto_id VARCHAR(5) NOT NULL DEFAULT '11' AFTER article_id");
+    try { db()->exec("ALTER TABLE publicaciones ADD INDEX idx_depto (depto_id)"); } catch (Throwable) {}
 }
 
 // ── Fetch from DB ──────────────────────────────────────────────────────────────
@@ -166,6 +176,11 @@ try {
     if ($buscar !== '') {
         $whereClause .= ' AND LOWER(p.titulo) LIKE ?';
         $queryParams[] = '%' . mb_strtolower($buscar, 'UTF-8') . '%';
+    }
+
+    if ($deptoFilter !== '') {
+        $whereClause .= ' AND p.depto_id = ?';
+        $queryParams[] = $deptoFilter;
     }
 
     $countStmt = $pdo->prepare("SELECT COUNT(*) FROM publicaciones p $joinClause $whereClause");
@@ -214,6 +229,23 @@ try {
     $totalBase = $totalProcesadas = $totalPendientes = 0;
 }
 
+// ── Load departments for filter ───────────────────────────────────────────────
+$deptos = [];
+try {
+    // Ensure table exists before querying
+    db()->exec("CREATE TABLE IF NOT EXISTS departamentos (
+        depto_id VARCHAR(5) NOT NULL PRIMARY KEY,
+        nombre VARCHAR(100) NOT NULL,
+        activo TINYINT(1) NOT NULL DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    db()->exec("INSERT IGNORE INTO departamentos (depto_id, nombre, activo) VALUES
+        ('11','Bogotá D.C.',1),('25','Cundinamarca',0),('05','Antioquia',0),
+        ('76','Valle del Cauca',0),('66','Risaralda',0),('63','Quindío',0),
+        ('17','Caldas',0),('73','Tolima',0)");
+    $deptos = db()->query("SELECT depto_id, nombre, activo FROM departamentos ORDER BY nombre")->fetchAll(PDO::FETCH_ASSOC);
+} catch (Throwable) {}
+
 $from = $total > 0 ? (($page - 1) * PER_PAGE + 1) : 0;
 $to   = min($page * PER_PAGE, $total);
 
@@ -241,7 +273,7 @@ try {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Remates Judiciales - Bogotá</title>
+    <title>RematesCO - Publicaciones</title>
     <style>
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: #f0f2f5; color: #1a1a2e; min-height: 100vh; }
@@ -321,6 +353,24 @@ try {
             min-width: 18px;
         }
         .btn-add-remate:hover .cnt-badge { background: #fff; color: #7c3aed; }
+
+        /* ── Department filter ────────────────────────────── */
+        .depto-pill { display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:12px;font-size:.75rem;font-weight:600;cursor:pointer;border:1.5px solid transparent;transition:all .15s;user-select:none; }
+        .depto-pill.active   { background:#0f3460;border-color:#0f3460;color:#fff; }
+        .depto-pill.inactive { background:#f3f4f6;border-color:#d1d5db;color:#777; }
+        .depto-pill.inactive:hover { border-color:#0f3460;color:#0f3460; }
+        #depto-modal-overlay { display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:2000;align-items:center;justify-content:center; }
+        #depto-modal-box { background:#fff;border-radius:10px;padding:24px;width:420px;max-width:92vw;box-shadow:0 8px 32px rgba(0,0,0,.25); }
+        #depto-modal-box h3 { font-size:1rem;font-weight:700;color:#0f3460;margin-bottom:4px; }
+        #depto-modal-box p { font-size:.8rem;color:#666;margin-bottom:16px; }
+        .depto-row { display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid #f0f0f0; }
+        .depto-row:last-child { border-bottom:none; }
+        .depto-toggle { position:relative;display:inline-block;width:38px;height:22px; }
+        .depto-toggle input { opacity:0;width:0;height:0; }
+        .depto-slider { position:absolute;cursor:pointer;inset:0;background:#d1d5db;border-radius:22px;transition:.2s; }
+        .depto-slider:before { position:absolute;content:"";height:16px;width:16px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.2s; }
+        input:checked + .depto-slider { background:#2d8a4e; }
+        input:checked + .depto-slider:before { transform:translateX(16px); }
 
         /* ── Sync button ──────────────────────────────── */
         #btn-sync {
@@ -453,8 +503,14 @@ try {
     <div class="brand">
         <span class="brand-icon">⚖️</span>
         <div>
-            <h1>Remates Judiciales</h1>
-            <p class="subtitle">Publicaciones Procesales · Bogotá D.C.</p>
+            <h1>RematesCO</h1>
+            <p class="subtitle">Publicaciones Procesales · <?php
+                if ($deptoFilter !== '') {
+                    $dn = 'Dpto. ' . $deptoFilter;
+                    foreach ($deptos as $_d) { if ($_d['depto_id'] === $deptoFilter) { $dn = $_d['nombre']; break; } }
+                    echo htmlspecialchars($dn);
+                } else { echo 'Colombia'; }
+            ?></p>
         </div>
     </div>
     <nav style="display:flex;flex-direction:column;gap:4px;align-items:flex-end;">
@@ -468,6 +524,10 @@ try {
             <?php if ($total > 0): ?>
                 <span class="badge"><?= number_format($total, 0, ',', '.') ?> publicaciones</span>
             <?php endif; ?>
+            <button onclick="document.getElementById('depto-modal-overlay').style.display='flex'"
+                    style="color:#fff;font-size:.82rem;padding:5px 12px;border:1px solid rgba(255,255,255,.3);border-radius:5px;background:rgba(255,255,255,.08);font-weight:500;cursor:pointer;">
+                🗺 Departamentos
+            </button>
             <a href="/remates_vehiculos.php"
                style="color:#fff;text-decoration:none;font-size:.82rem;padding:5px 14px;border:1px solid rgba(124,58,237,.6);border-radius:5px;background:rgba(124,58,237,.3);font-weight:600;">
                 🚗 Mis Remates
@@ -508,6 +568,7 @@ try {
         <form method="get" action="" style="margin-bottom:16px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
             <input type="hidden" name="orden" value="<?= htmlspecialchars($orden) ?>">
             <?php if ($pendientes): ?><input type="hidden" name="pendientes" value="1"><?php endif; ?>
+            <?php if ($deptoFilter !== ''): ?><input type="hidden" name="depto" value="<?= htmlspecialchars($deptoFilter) ?>"><?php endif; ?>
             <input
                 type="text"
                 name="buscar"
@@ -522,6 +583,23 @@ try {
                 <a href="<?= htmlspecialchars(pageUrl(1, $orden, $pendientes)) ?>" class="btn" style="background:#f3f4f6;color:#555;border:1px solid #d1d5db;white-space:nowrap;">✕ Limpiar</a>
             <?php endif; ?>
         </form>
+
+        <?php if (!empty($deptos)): ?>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:14px;">
+            <span style="font-size:.75rem;color:#888;font-weight:600;margin-right:4px;">Depto:</span>
+            <a href="<?= htmlspecialchars(pageUrl(1, $orden, $pendientes, $buscar, '')) ?>"
+               class="depto-pill <?= $deptoFilter === '' ? 'active' : 'inactive' ?>">Todos</a>
+            <?php foreach ($deptos as $d): if (!$d['activo']) continue; ?>
+            <?php $dHref = ($deptoFilter === $d['depto_id'])
+                    ? pageUrl(1, $orden, $pendientes, $buscar, '')
+                    : pageUrl(1, $orden, $pendientes, $buscar, $d['depto_id']); ?>
+            <a href="<?= htmlspecialchars($dHref) ?>"
+               class="depto-pill <?= $deptoFilter === $d['depto_id'] ? 'active' : 'inactive' ?>">
+                <?= htmlspecialchars($d['nombre']) ?>
+            </a>
+            <?php endforeach; ?>
+        </div>
+        <?php endif; ?>
 
         <div class="stats-bar">
             <div class="stats-info">
@@ -768,6 +846,30 @@ try {
             <button class="btn-save" onclick="document.getElementById('form-remate').requestSubmit()">
                 Guardar Remate
             </button>
+        </div>
+    </div>
+</div>
+
+<!-- Department management modal -->
+<div id="depto-modal-overlay">
+    <div id="depto-modal-box">
+        <h3>Departamentos activos</h3>
+        <p>Activa los departamentos que quieres sincronizar y consultar.</p>
+        <div id="depto-list">
+            <?php foreach ($deptos as $d): ?>
+            <div class="depto-row" id="depto-row-<?= htmlspecialchars($d['depto_id']) ?>">
+                <span style="font-size:.88rem;color:#1a1a2e;font-weight:500"><?= htmlspecialchars($d['nombre']) ?></span>
+                <label class="depto-toggle">
+                    <input type="checkbox" <?= $d['activo'] ? 'checked' : '' ?>
+                           onchange="toggleDepto('<?= htmlspecialchars($d['depto_id']) ?>', this)">
+                    <span class="depto-slider"></span>
+                </label>
+            </div>
+            <?php endforeach; ?>
+        </div>
+        <div style="display:flex;justify-content:flex-end;margin-top:16px">
+            <button onclick="document.getElementById('depto-modal-overlay').style.display='none'"
+                    style="background:#f3f4f6;color:#555;border:none;border-radius:5px;padding:7px 18px;font-size:.85rem;cursor:pointer;font-weight:600">Cerrar</button>
         </div>
     </div>
 </div>
@@ -1050,6 +1152,21 @@ function updateBadge(aid, cnt) {
 function esc(s) {
     if (!s) return '';
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Toggle depto active status ─────────────────────────────────────────────────
+async function toggleDepto(deptoId, checkbox) {
+    const fd = new FormData();
+    fd.append('action',   'toggle_depto');
+    fd.append('depto_id', deptoId);
+    try {
+        const resp = await fetch('/sync.php', { method: 'POST', body: fd });
+        const d    = await resp.json();
+        if (d.error) { alert('Error: ' + d.error); checkbox.checked = !checkbox.checked; }
+    } catch(e) {
+        alert('Error de conexión.');
+        checkbox.checked = !checkbox.checked;
+    }
 }
 
 async function submitRemate(e) {

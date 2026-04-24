@@ -11,6 +11,8 @@ class Scraper
 
     private string $userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
+    public function __construct(private string $deptoId = self::DEPTO_BOGOTA) {}
+
     /**
      * Fetch one page of Remates results.
      * Returns ['total' => int, 'pages' => int, 'items' => array]
@@ -58,7 +60,7 @@ class Scraper
             'p_p_mode'      => 'view',
             $p . 'action'      => 'filterStructures',
             $p . 'idStructure' => self::STRUCTURE_REMATES,
-            $p . 'idDepto'     => self::DEPTO_BOGOTA,
+            $p . 'idDepto'     => $this->deptoId,
             $p . 'delta'       => self::PER_PAGE,
             $p . 'resetCur'    => 'false',
             $p . 'cur'         => $page,

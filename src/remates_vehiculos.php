@@ -192,7 +192,7 @@ function sortIcon(string $key): string {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Remates de Vehículos</title>
+    <title>Mis RematesCO</title>
     <style>
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: 'Segoe UI', system-ui, sans-serif; background: #f0f2f5; color: #1a1a2e; min-height: 100vh; }
@@ -348,7 +348,7 @@ function sortIcon(string $key): string {
     <div class="brand">
         <span style="font-size:1.8rem">🚗</span>
         <div>
-            <h1>Remates de Vehículos</h1>
+            <h1>Mis RematesCO</h1>
             <p class="subtitle">Registros guardados · Bogotá D.C.</p>
         </div>
     </div>
